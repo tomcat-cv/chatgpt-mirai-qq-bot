@@ -1,6 +1,7 @@
-import asyncio
-from typing import Generator
+import json
+from typing import Generator, Union
 
+import asyncio
 from constants import config
 from adapter.botservice import BotAdapter
 from EdgeGPT import Chatbot as EdgeChatbot, ConversationStyle
@@ -26,9 +27,12 @@ class BingAdapter(BotAdapter):
         self.conversation_style = conversation_style
         account = botManager.pick('bing-cookie')
         self.cookieData = []
-        for line in account.cookie_content.split("; "):
-            name, value = line.split("=", 1)
-            self.cookieData.append({"name": name, "value": value})
+        if account.cookie_content.strip().startswith('['):
+            self.cookieData = json.loads(account.cookie_content)
+        else:
+            for line in account.cookie_content.split("; "):
+                name, value = line.split("=", 1)
+                self.cookieData.append({"name": name, "value": value})
 
         self.bot = EdgeChatbot(cookies=self.cookieData, proxy=account.proxy)
 
@@ -57,15 +61,18 @@ class BingAdapter(BotAdapter):
                 else:
                     try:
                         max_messages = response["item"]["throttling"]["maxNumUserMessagesInConversation"]
-                    except:
+                    except Exception:
                         max_messages = config.bing.max_messages
-                    remaining_conversations = f'\n剩余回复数：{self.count} / {max_messages} '
+                    if config.bing.show_remaining_count:
+                        remaining_conversations = f'\n剩余回复数：{self.count} / {max_messages} '
+                    else:
+                        remaining_conversations = ''
                     if len(response["item"].get('messages', [])) > 1 and config.bing.show_suggestions:
                         suggestions = response["item"]["messages"][-1].get("suggestedResponses", [])
                         if len(suggestions) > 0:
                             parsed_content = parsed_content + '\n猜你想问：  \n'
                             for suggestion in suggestions:
-                                parsed_content = parsed_content + f"* {suggestion.get('text')}  \n"
+                                parsed_content = f"{parsed_content}* {suggestion.get('text')}  \n"
                         yield parsed_content
                     parsed_content = parsed_content + remaining_conversations
                     # not final的parsed_content已经yield走了，只能在末尾加剩余回复数，或者改用EdgeGPT自己封装的ask之后再正则替换
@@ -75,11 +82,14 @@ class BingAdapter(BotAdapter):
                         return
 
                 yield parsed_content
-            logger.debug("[Bing AI 响应] " + parsed_content)
+            logger.debug(f"[Bing AI 响应] {parsed_content}")
+        except Union[asyncio.exceptions.TimeoutError, asyncio.exceptions.CancelledError] as e:
+            raise e
         except Exception as e:
             logger.exception(e)
             yield "Bing 已结束本次会话。继续发送消息将重新开启一个新会话。"
             await self.on_reset()
             return
+
     async def preset_ask(self, role: str, text: str):
         yield None  # Bing 不使用预设功能

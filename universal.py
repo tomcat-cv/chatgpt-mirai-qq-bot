@@ -1,7 +1,7 @@
+import asyncio
 import re
 from typing import Callable
 
-import asyncio
 import openai
 from graia.ariadne.message.chain import MessageChain
 from graia.ariadne.message.element import Plain
@@ -12,7 +12,7 @@ from urllib3.exceptions import MaxRetryError
 
 from constants import botManager
 from constants import config
-from conversation import ConversationHandler
+from conversation import ConversationHandler, ConversationContext
 from exceptions import PresetNotFoundException, BotRatelimitException, ConcurrentMessageException, \
     BotTypeNotFoundException, NoAvailableBotException, BotOperationNotSupportedException, CommandRefusedException
 from middlewares.baiducloud import MiddlewareBaiduCloud
@@ -22,6 +22,11 @@ from middlewares.timeout import MiddlewareTimeout
 from utils.text_to_speech import get_tts_voice
 
 middlewares = [MiddlewareTimeout(), MiddlewareRatelimit(), MiddlewareBaiduCloud(), MiddlewareConcurrentLock()]
+
+
+def get_ping_response(conversation_context: ConversationContext):
+    return config.response.ping_response.format(current_ai=conversation_context.type,
+                                                supported_ai=botManager.bots_info())
 
 
 async def handle_message(_respond: Callable, session_id: str, message: str,
@@ -43,9 +48,9 @@ async def handle_message(_respond: Callable, session_id: str, message: str,
     if ' ' in message and (config.trigger.allow_switching_ai or is_manager):
         for ai_type, prefixes in config.trigger.prefix_ai.items():
             for prefix in prefixes:
-                if prefix + ' ' in message:
+                if f'{prefix} ' in message:
                     conversation_context = await conversation_handler.first_or_create(ai_type)
-                    message = message.removeprefix(prefix + ' ')
+                    message = message.removeprefix(f'{prefix} ')
                     break
             else:
                 # Continue if the inner loop wasn't broken.
@@ -105,11 +110,14 @@ async def handle_message(_respond: Callable, session_id: str, message: str,
             # 不带前缀 - 正常初始化会话
             if bot_type_search := re.search(config.trigger.switch_command, prompt):
                 if not (config.trigger.allow_switching_ai or is_manager):
-                    await respond(f"不好意思，只有管理员才能切换AI！")
+                    await respond("不好意思，只有管理员才能切换AI！")
                     return
-                conversation_handler.current_conversation = await conversation_handler.create(
-                    bot_type_search.group(1).strip())
-                await respond(f"已切换至 {bot_type_search.group(1).strip()} AI，现在开始和我聊天吧！")
+                conversation_handler.current_conversation = (
+                    await conversation_handler.create(
+                        bot_type_search[1].strip()
+                    )
+                )
+                await respond(f"已切换至 {bot_type_search[1].strip()} AI，现在开始和我聊天吧！")
                 return
             # 最终要选择的对话上下文
             if not conversation_context:
@@ -120,41 +128,55 @@ async def handle_message(_respond: Callable, session_id: str, message: str,
             if prompt in config.trigger.reset_command:
                 task = conversation_context.reset()
 
-            # 回滚会话
             elif prompt in config.trigger.rollback_command:
                 task = conversation_context.rollback()
 
+            elif prompt in config.trigger.ping_command:
+                await respond(get_ping_response(conversation_context))
+                return
+
             elif voice_type_search := re.search(config.trigger.switch_voice, prompt):
-                if config.azure.tts_speech_key:
-                    conversation_context.conversation_voice = voice_type_search.group(1).strip()
-                    if conversation_context.conversation_voice == '关闭':
-                        conversation_context.conversation_voice = None
-                        await respond(
-                            f"已关闭语音，让我们继续聊天吧！")
-                    else:
-                        await respond(
-                            f"已切换至 {conversation_context.conversation_voice} 语音，让我们继续聊天吧！")
+                if not config.azure.tts_speech_key and config.text_to_speech.engine == "azure":
+                    await respond("未配置 Azure TTS 账户，无法切换语音！")
+                conversation_context.conversation_voice = voice_type_search[1].strip()
+                if conversation_context.conversation_voice == '关闭':
+                    conversation_context.conversation_voice = None
+                    await respond("已关闭语音，让我们继续聊天吧！")
+                elif config.text_to_speech.engine == "vits":
+                    from utils.vits_tts import vits_api_instance
+
+                    try:
+                        if conversation_context.conversation_voice != "None":
+                            voice_id = conversation_context.conversation_voice
+                            voice_name = await vits_api_instance.set_id(voice_id)
+                        else:
+                            voice_name = await vits_api_instance.set_id(None)
+                        await respond(f"已切换至 {voice_name} 语音，让我们继续聊天吧！")
+                    except ValueError:
+                        await respond("提供的语音ID无效，请输入一个有效的数字ID。")
+                    except Exception as e:
+                        await respond(str(e))
                 else:
-                    await respond(f"未配置 Azure TTS 账户，无法切换语音！")
+                    await respond(f"已切换至 {conversation_context.conversation_voice} 语音，让我们继续聊天吧！")
                 return
 
             elif prompt in config.trigger.mixed_only_command:
                 conversation_context.switch_renderer("mixed")
-                await respond(f"已切换至图文混合模式，接下来我的回复将会以图文混合的方式呈现！")
+                await respond("已切换至图文混合模式，接下来我的回复将会以图文混合的方式呈现！")
                 return
 
             elif prompt in config.trigger.image_only_command:
                 conversation_context.switch_renderer("image")
-                await respond(f"已切换至纯图片模式，接下来我的回复将会以图片呈现！")
+                await respond("已切换至纯图片模式，接下来我的回复将会以图片呈现！")
                 return
 
             elif prompt in config.trigger.text_only_command:
                 conversation_context.switch_renderer("text")
-                await respond(f"已切换至纯文字模式，接下来我的回复将会以文字呈现（被吞除外）！")
+                await respond("已切换至纯文字模式，接下来我的回复将会以文字呈现（被吞除外）！")
                 return
 
             elif switch_model_search := re.search(config.trigger.switch_model, prompt):
-                model_name = switch_model_search.group(1).strip()
+                model_name = switch_model_search[1].strip()
                 if model_name in conversation_context.supported_models:
                     if not (is_manager or model_name in config.trigger.allowed_models):
                         await respond(f"不好意思，只有管理员才能切换到 {model_name} 模型！")
@@ -168,9 +190,9 @@ async def handle_message(_respond: Callable, session_id: str, message: str,
 
             # 加载预设
             if preset_search := re.search(config.presets.command, prompt):
-                logger.trace(f"{session_id} - 正在执行预设： {preset_search.group(1)}")
+                logger.trace(f"{session_id} - 正在执行预设： {preset_search[1]}")
                 async for _ in conversation_context.reset(): ...
-                task = conversation_context.load_preset(preset_search.group(1))
+                task = conversation_context.load_preset(preset_search[1])
             elif not conversation_context.preset:
                 # 当前没有预设
                 logger.trace(f"{session_id} - 未检测到预设，正在执行默认预设……")
@@ -182,7 +204,7 @@ async def handle_message(_respond: Callable, session_id: str, message: str,
                 task = conversation_context.ask(prompt=prompt, chain=chain, name=nickname)
             async for rendered in task:
                 if rendered:
-                    if str(rendered).strip() == '':
+                    if not str(rendered).strip():
                         logger.warning("检测到内容为空的输出，已忽略")
                         continue
                     action = lambda session_id, prompt, rendered, respond: respond(rendered)
@@ -196,7 +218,7 @@ async def handle_message(_respond: Callable, session_id: str, message: str,
         except CommandRefusedException as e:
             await respond(str(e))
         except openai.error.InvalidRequestError as e:
-            await respond("服务器拒绝了您的请求，原因是" + str(e))
+            await respond(f"服务器拒绝了您的请求，原因是{str(e)}")
         except BotOperationNotSupportedException:
             await respond("暂不支持此操作，抱歉！")
         except ConcurrentMessageException as e:  # Chatbot 账号同时收到多条消息
@@ -207,24 +229,7 @@ async def handle_message(_respond: Callable, session_id: str, message: str,
             await respond(f"当前没有可用的{e}账号，不支持使用此 AI！")
         except BotTypeNotFoundException as e:  # 预设不存在
             respond_msg = f"AI类型{e}不存在，请检查你的输入是否有问题！目前仅支持：\n"
-            if len(botManager.bots['chatgpt-web']) > 0:
-                respond_msg += "* chatgpt-web - OpenAI ChatGPT 网页版\n"
-            if len(botManager.bots['openai-api']) > 0:
-                respond_msg += "* chatgpt-api - OpenAI ChatGPT API版\n"
-            if len(botManager.bots['bing-cookie']) > 0:
-                respond_msg += "* bing-c - 微软 New Bing (创造力)\n"
-                respond_msg += "* bing-b - 微软 New Bing (平衡)\n"
-                respond_msg += "* bing-p - 微软 New Bing (精确)\n"
-            if len(botManager.bots['bard-cookie']) > 0:
-                respond_msg += "* bard   - Google Bard\n"
-            if len(botManager.bots['yiyan-cookie']) > 0:
-                respond_msg += "* yiyan  - 百度 文心一言\n"
-            if len(botManager.bots['chatglm-api']) > 0:
-                respond_msg += "* chatglm-api - 清华 ChatGLM-6B (本地)\n"
-            if len(botManager.bots['poe-web']) > 0:
-                respond_msg += "* sage   - POE Sage 模型\n"
-                respond_msg += "* claude - POE Claude 模型\n"
-                respond_msg += "* chinchilla - POE ChatGPT 模型\n"
+            respond_msg += botManager.bots_info()
             await respond(respond_msg)
         except PresetNotFoundException:  # 预设不存在
             await respond("预设不存在，请检查你的输入是否有问题！")

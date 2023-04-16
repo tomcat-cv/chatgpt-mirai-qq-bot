@@ -1,20 +1,23 @@
+![cover](https://user-images.githubusercontent.com/117586514/230783378-34ddb86a-c8d3-47a6-baa5-86e39200b258.png)
+
+------------------------------------
 <p align="center">
-  <h3 align="center">ChatGPT QQ Bot</h3>
+  <h2 align="center">ChatGPT for Bot</h2>
   <p align="center">
-    一款使用 OpenAI 的 ChatGPT 进行聊天的 QQ 机器人！
+    一款支持各种主流语言模型的聊天的机器人！
     <br/>
     <br/>
-    <a href="https://darks-organization.gitbook.io/chatgpt-qq/"><strong>查看使用教程 »</strong></a>
+    <a href="https://chatgpt-qq.lss233.com/"><strong>» 查看使用教程 »</strong></a>
     <br/>
   </p>
 </p>
 
-
-![Github stars](https://badgen.net/github/stars/lss233/chatgpt-mirai-qq-bot?icon=github&label=stars)
-[![Docker build latest](https://github.com/lss233/chatgpt-mirai-qq-bot/actions/workflows/docker-latest.yml/badge.svg?branch=browser-version)](https://github.com/lss233/chatgpt-mirai-qq-bot/actions/workflows/docker-latest.yml)
-[![Docker Pulls](https://badgen.net/docker/pulls/lss233/chatgpt-mirai-qq-bot?icon=docker&label=pulls)](https://hub.docker.com/r/lss233/chatgpt-mirai-qq-bot/)
-[![Docker Image Size](https://badgen.net/docker/size/lss233/chatgpt-mirai-qq-bot/browser-version/amd64?icon=docker&label=image%20size)](https://hub.docker.com/r/lss233/chatgpt-mirai-qq-bot/)
-
+<p align="center">
+  <a href="https://github.com/lss233/chatgpt-mirai-qq-bot/stargazers"><img src="https://img.shields.io/github/stars/lss233/chatgpt-mirai-qq-bot?color=E2CDBC&amp;logo=github&amp;style=for-the-badge" alt="Github stars"></a>
+  <a href="https://github.com/lss233/chatgpt-mirai-qq-bot/actions/workflows/docker-latest.yml"><img src="https://img.shields.io/github/actions/workflow/status/lss233/chatgpt-mirai-qq-bot/docker-latest.yml?color=E2CDBC&amp;logo=docker&amp;logoColor=white&amp;style=for-the-badge" alt="Docker build latest"></a>
+  <a href="https://hub.docker.com/r/lss233/chatgpt-mirai-qq-bot/"><img src="https://img.shields.io/docker/pulls/lss233/chatgpt-mirai-qq-bot?color=E2CDBC&amp;logo=docker&amp;logoColor=white&amp;style=for-the-badge" alt="Docker Pulls"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/github/license/lss233/chatgpt-mirai-qq-bot?&amp;color=E2CDBC&amp;style=for-the-badge" alt="License"></a>
+</p>
 
 ***
 
@@ -23,7 +26,11 @@
   如果不能解决，把遇到的问题、**日志**和配置文件准备好后再提问。
 * [调试群](https://jq.qq.com/?_wv=1027&k=TBX8Saq7) 这个群里有很多 ChatGPT QQ 机器人，不解答技术问题。 
 
-![Preview](.github/preview.png)
+| ![猫娘问答](https://img.shields.io/badge/-%E7%8C%AB%E5%A8%98%E9%97%AE%E7%AD%94-E2CDBC?style=for-the-badge)                     | ![生活助手](https://img.shields.io/badge/-生活助手-E2CDBC?style=for-the-badge)                   | ![文字 RPG](https://img.shields.io/badge/-文字RPG-E2CDBC?style=for-the-badge)            |
+|------------------------------|------------------------------|------------------------------|
+| ![image](https://user-images.githubusercontent.com/8984680/230702158-73967aa9-01be-44d6-bbd9-24437e333140.png) | ![image](https://user-images.githubusercontent.com/8984680/230702177-de96f89b-053e-4313-a131-715af969db04.png) | ![image](https://user-images.githubusercontent.com/8984680/230702635-fb1de3bf-acbd-46ca-8d6f-caa47368b4d4.png) |
+
+
 
 
 **⚡ 支持**   
@@ -32,8 +39,9 @@
 * [x] 多账号支持
 * [x] 百度云内容审核
 * [x] 额度限制 
-* [x] 预设人格初
+* [x] 人格设定
 * [x] 支持 Mirai、 go-cqhttp、 Telegram、Discord  
+* [x] 可作为 HTTP 服务端提供 Web API
 * [x] 支持 ChatGPT 网页版
 * [x] 支持 ChatGPT Plus
 * [x] 支持 ChatGPT API
@@ -43,9 +51,9 @@
 * [x] 支持 文心一言 网页版
 * [x] 支持 ChatGLM-6B 本地版
 
-**多平台兼容**  
+**🤖 多平台兼容**  
 
-不仅仅是 Mirai， 我们支持多种平台。  
+我们支持多种聊天平台。  
 
 | 平台       | 群聊回复 | 私聊回复 | 条件触发 | 管理员指令 | 绘图  | 语音回复 |
 |----------|------|------|------|-------|-----|------|
@@ -147,6 +155,118 @@ python3 bot.py
 ```
 </details>
 
+**[广告] 免费 OpenAI API Key**  
+<img src=https://user-images.githubusercontent.com/50035229/229976556-99e8ac26-c8c3-4f56-902d-a52a7f2e50d5.png width=300px />  
+你可以在[这里获取免费的 OpenAI API Key](https://freeopenai.xyz/) 测试使用。
+## 🕸 HTTP API
+
+<details>
+    <summary>在 `config.cfg` 中加入以下配置后，将额外提供 HTTP API 支持。</summary>
+
+```toml
+[http]
+# 填写提供服务的端口
+host = "0.0.0.0"
+port = 8080
+debug = false
+```
+启动后将提供以下接口：  
+
+**POST**    `/v1/chat`  
+
+**请求参数**  
+
+|参数名|必选|类型|说明|
+|:---|:---|:---|:---|
+|session_id| 是 | String |会话ID，默认：`friend-default_session`|
+|username| 是 | String |用户名，默认：`某人`|
+|message| 是 | String |消息，不能为空|  
+
+**请求示例**
+```json
+{
+    "session_id": "friend-123456",
+    "username": "testuser",
+    "message": "ping"
+}
+```
+**响应格式**
+|参数名|类型|说明|
+|:---|:---|:---|
+|result| String |SUCESS,DONE,FAILED|
+|message| String[] |文本返回，支持多段返回|
+|voice| String[] |音频返回，支持多个音频的base64编码；参考：data:audio/mpeg;base64,...|
+|image| String[] |图片返回，支持多个图片的base64编码；参考：data:image/png;base64,...|
+
+**响应示例**  
+```json
+{
+    "result": "DONE",
+    "message": ["pong!"],
+    "voice": [],
+    "image": []
+}
+```
+
+**POST**    `/v2/chat`  
+
+**请求参数**  
+
+|参数名|必选|类型|说明|
+|:---|:---|:---|:---|
+|session_id| 是 | String |会话ID，默认：`friend-default_session`|
+|username| 是 | String |用户名，默认：`某人`|
+|message| 是 | String |消息，不能为空|  
+
+**请求示例**
+```json
+{
+    "session_id": "friend-123456",
+    "username": "testuser",
+    "message": "ping"
+}
+```
+**响应格式**
+字符串：request_id
+
+**响应示例**  
+```
+1681525479905
+```
+
+**GET**    `/v2/chat/response`  
+
+**请求参数**  
+
+|参数名|必选|类型|说明|
+|:---|:---|:---|:---|
+|request_id| 是 | String |请求id，/v2/chat返回的值|
+
+**请求示例**
+```
+/v2/chat/response?request_id=1681525479905
+```
+**响应格式**
+|参数名|类型|说明|
+|:---|:---|:---|
+|result| String |SUCESS,DONE,FAILED|
+|message| String[] |文本返回，支持多段返回|
+|voice| String[] |音频返回，支持多个音频的base64编码；参考：data:audio/mpeg;base64,...|
+|image| String[] |图片返回，支持多个图片的base64编码；参考：data:image/png;base64,...|
+
+* 每次请求返回增量并清空。DONE、FAILED之后没有更多返回。
+
+**响应示例**  
+```json
+{
+    "result": "DONE",
+    "message": ["pong!"],
+    "voice": ["data:audio/mpeg;base64,..."],
+    "image": ["data:image/png;base64,...", "data:image/png;base64,..."]
+}
+```
+</details>
+
 ## 🦊 加载预设
 
 如果你想让机器人自动带上某种聊天风格，可以使用预设功能。  
@@ -169,7 +289,7 @@ python3 bot.py
 
 ## 📷 文字转图片
 
-向 QQ 群发送消息失败时，自动将消息转为图片发送。  
+在发送代码或者向 QQ 群发送消息失败时，自动将消息转为图片发送。  
 
 字体文件存放于 `fonts/` 目录中。  
 
@@ -177,13 +297,7 @@ python3 bot.py
 
 ## 🎙 文字转语音
 
-自 v2.2.5 开始，我们支持文字转语音功能。  
-
-目前仅支持 Azure TTS 引擎提供的文字转语音服务。  
-
-你只需要在配置文件中填写 azure 的 `tts_speech_key` 和 `tts_speech_service_region`，  
-
-然后将 `text_to_speech` 中的 `always` 设置成 true，或者通过预设、切换语音命令来开启语音功能。  
+自 v2.2.5 开始，我们支持接入微软的 Azure 引擎 和 VITS 引擎，让你的机器人发送语音。
 
 **提示**：在 Windows 平台上使用语音功能需要安装最新的 VC 运行库，你可以在[这里](https://learn.microsoft.com/zh-CN/cpp/windows/latest-supported-vc-redist?view=msvc-170)下载。`
 
@@ -204,7 +318,7 @@ python3 bot.py
 * [fuergaosi233 / wechat-chatgpt](https://github.com/fuergaosi233/wechat-chatgpt) - 在微信上迅速接入 ChatGPT
 
 
-## 🛠 贡献者名单  
+## 🛠 贡献者名单   
 
 欢迎提出新的点子、 Pull Request。  
 

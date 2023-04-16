@@ -1,18 +1,17 @@
 import os
 import sys
+from io import BytesIO
 
 import discord
 from discord.ext import commands
 from graia.ariadne.message.chain import MessageChain
 from graia.ariadne.message.element import Image, Plain, Voice
-from loguru import logger
 
 from universal import handle_message
-from io import BytesIO
 
 sys.path.append(os.getcwd())
 
-from constants import config, botManager
+from constants import config
 
 intents = discord.Intents.default()
 intents.typing = False
@@ -67,18 +66,14 @@ async def on_message_event(message: discord.Message) -> None:
                          message.content.replace(f"<@{bot_id}>", "").strip(), is_manager=False,
                          nickname=message.author.name)
 
-
-@bot.event
-async def on_ready():
-    await botManager.login()
-    logger.info(f"Bot is ready. Logged in as {bot.user.name}-{bot.user.id}")
-
-
 @bot.event
 async def on_message(message):
     await bot.process_commands(message)
     await on_message_event(message)
 
 
-def main():
-    bot.run(config.discord.bot_token)
+async def start_task():
+    """|coro|
+    以异步方式启动
+    """
+    return await bot.start(config.discord.bot_token)

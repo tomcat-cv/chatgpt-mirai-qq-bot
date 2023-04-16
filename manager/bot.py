@@ -1,19 +1,16 @@
-import datetime
 import hashlib
 import itertools
 import os
-import time
 import urllib.request
 from typing import List, Dict
 from urllib.parse import urlparse
 
 import OpenAIAuth
-import aiohttp
 import openai
 import requests
 import urllib3.exceptions
 from aiohttp import ClientConnectorError
-from dateutil.relativedelta import relativedelta
+from httpx import ConnectTimeout
 from loguru import logger
 from poe import Client as PoeClient
 from requests.exceptions import SSLError, RequestException
@@ -144,6 +141,24 @@ class BotManager:
             else:
                 self.config.response.default_ai = 'chatgpt-web'
 
+    def reset_bot(self, bot):
+        from adapter.quora.poe import PoeClientWrapper
+        if isinstance(bot, PoeClientWrapper):
+            logger.info("Try to reset poe client.")
+            bot_id = bot.client_id
+            self.bots["poe-web"] = [x for x in self.bots["poe-web"] if x.client_id != bot_id]
+            p_b = bot.p_b
+            new_client = PoeClient(token=p_b, proxy=bot.client.proxy)
+            if self.poe_check_auth(new_client):
+                new_bot = PoeClientWrapper(bot_id, new_client, p_b)
+                self.bots["poe-web"].append(new_bot)
+                return new_bot
+            else:
+                logger.warning("Failed to reset poe bot, try to pick a new bot.")
+                return self.pick("poe-web")
+        else:
+            raise RuntimeError("Unsupported reset action.")
+
     def login_bing(self):
         os.environ['BING_PROXY_URL'] = self.config.bing.bing_endpoint
         for i, account in enumerate(self.bing):
@@ -175,23 +190,24 @@ class BotManager:
             logger.error("所有 Bard 账号均解析失败！")
         logger.success(f"成功解析 {len(self.bots['bard-cookie'])}/{len(self.bing)} 个 Bard 账号！")
 
-    def login_poe(self):
-        def poe_check_auth(client: PoeClient) -> bool:
-            try:
-                response = client.get_bot_names()
-                logger.debug(f"poe bot is running. bot names -> {response}")
-                return True
-            except KeyError:
-                return False
+    def poe_check_auth(self, client: PoeClient) -> bool:
+        try:
+            response = client.get_bot_names()
+            logger.debug(f"poe bot is running. bot names -> {response}")
+            return True
+        except KeyError:
+            return False
 
+    def login_poe(self):
+        from adapter.quora.poe import PoeClientWrapper
         try:
             for i, account in enumerate(self.poe):
                 logger.info("正在解析第 {i} 个 poe web 账号", i=i + 1)
                 if proxy := self.__check_proxy(account.proxy):
                     account.proxy = proxy
                 bot = PoeClient(token=account.p_b, proxy=account.proxy)
-                if poe_check_auth(bot):
-                    self.bots["poe-web"].append(bot)
+                if self.poe_check_auth(bot):
+                    self.bots["poe-web"].append(PoeClientWrapper(i, bot, account.p_b))
                     logger.success("解析成功！", i=i + 1)
         except Exception as e:
             logger.error("解析失败：")
@@ -236,20 +252,20 @@ class BotManager:
                 if isinstance(account, OpenAIAPIKey):
                     bot = await self.__login_openai_apikey(account)
                     self.bots["openai-api"].append(bot)
-                elif account.mode == "proxy" or account.mode == "browserless":
+                elif account.mode in ["proxy", "browserless"]:
                     bot = await self.__login_V1(account)
                     self.bots["chatgpt-web"].append(bot)
                 elif account.mode == "browser":
                     raise Exception("浏览器模式已移除，请使用 browserless 模式。")
                 else:
-                    raise Exception("未定义的登录类型：" + account.mode)
+                    raise Exception(f"未定义的登录类型：{account.mode}")
                 bot.id = i
                 bot.account = account
                 logger.success("登录成功！", i=i + 1)
                 counter = counter + 1
             except OpenAIAuth.Error as e:
                 logger.error("登录失败! 请检查 IP 、代理或者账号密码是否正确{exc}", exc=e)
-            except (RequestException, SSLError, urllib3.exceptions.MaxRetryError, ClientConnectorError) as e:
+            except (ConnectTimeout, RequestException, SSLError, urllib3.exceptions.MaxRetryError, ClientConnectorError) as e:
                 logger.error("登录失败! 连接 OpenAI 服务器失败,请更换代理节点重试！{exc}", exc=e)
             except APIKeyNoFundsError:
                 logger.error("登录失败! API 账号余额不足，无法继续使用。")
@@ -293,19 +309,18 @@ class BotManager:
             openai.proxy = system_proxy
 
     def __check_proxy(self, proxy):
-        if proxy is not None:
-            logger.info(f"[代理测试] 正在检查代理配置：{proxy}")
-            proxy_addr = urlparse(proxy)
-            if not network.is_open(proxy_addr.hostname, proxy_addr.port):
-                raise Exception("登录失败! 无法连接至本地代理服务器，请检查配置文件中的 proxy 是否正确！")
-            requests.get("http://www.gstatic.com/generate_204", proxies={
-                "https": proxy,
-                "http": proxy
-            })
-            logger.success(f"[代理测试] 连接成功！")
-            return proxy
-        else:
+        if proxy is None:
             return openai.proxy
+        logger.info(f"[代理测试] 正在检查代理配置：{proxy}")
+        proxy_addr = urlparse(proxy)
+        if not network.is_open(proxy_addr.hostname, proxy_addr.port):
+            raise Exception("登录失败! 无法连接至本地代理服务器，请检查配置文件中的 proxy 是否正确！")
+        requests.get("http://www.gstatic.com/generate_204", proxies={
+            "https": proxy,
+            "http": proxy
+        })
+        logger.success("[代理测试] 连接成功！")
+        return proxy
 
     def __save_login_cache(self, account: OpenAIAuthBase, cache: dict):
         """保存登录缓存"""
@@ -318,12 +333,12 @@ class BotManager:
         account_sha = hashlib.sha256(account.json().encode('utf8')).hexdigest()
         q = Query()
         cache = self.cache_db.get(q.account == account_sha)
-        return cache['cache'] if cache is not None else dict()
+        return cache['cache'] if cache is not None else {}
 
     async def __login_V1(self, account: OpenAIAuthBase) -> ChatGPTBrowserChatbot:
         logger.info("模式：无浏览器登录")
         cached_account = dict(self.__load_login_cache(account), **account.dict())
-        config = dict()
+        config = {}
         if proxy := self.__check_proxy(account.proxy):
             config['proxy'] = proxy
         if cached_account.get('paid'):
@@ -386,13 +401,38 @@ class BotManager:
         if proxy := self.__check_proxy(account.proxy):
             openai.proxy = proxy
             account.proxy = proxy
-        logger.info("当前检查的 API Key 为：" + account.api_key[:8] + "******" + account.api_key[-4:])
+        logger.info(
+            f"当前检查的 API Key 为：{account.api_key[:8]}******{account.api_key[-4:]}"
+        )
         logger.warning("在查询 API 额度时遇到问题，请自行确认额度。")
         return account
 
     def pick(self, type: str):
-        if not type in self.roundrobin:
+        if type not in self.roundrobin:
             self.roundrobin[type] = itertools.cycle(self.bots[type])
         if len(self.bots[type]) == 0:
             raise NoAvailableBotException(type)
         return next(self.roundrobin[type])
+
+    def bots_info(self):
+        from constants import LlmName
+        bot_info = ""
+        if len(self.bots['chatgpt-web']) > 0:
+            bot_info += f"* {LlmName.ChatGPT_Web.value} : OpenAI ChatGPT 网页版\n"
+        if len(self.bots['openai-api']) > 0:
+            bot_info += f"* {LlmName.ChatGPT_Api.value} : OpenAI ChatGPT API版\n"
+        if len(self.bots['bing-cookie']) > 0:
+            bot_info += f"* {LlmName.BingC.value} : 微软 New Bing (创造力)\n"
+            bot_info += f"* {LlmName.BingB.value} : 微软 New Bing (平衡)\n"
+            bot_info += f"* {LlmName.BingP.value} : 微软 New Bing (精确)\n"
+        if len(self.bots['bard-cookie']) > 0:
+            bot_info += f"* {LlmName.Bard.value} : Google Bard\n"
+        if len(self.bots['yiyan-cookie']) > 0:
+            bot_info += f"* {LlmName.YiYan.value} : 百度 文心一言\n"
+        if len(self.bots['chatglm-api']) > 0:
+            bot_info += f"* {LlmName.ChatGLM.value} : 清华 ChatGLM-6B (本地)\n"
+        if len(self.bots['poe-web']) > 0:
+            bot_info += f"* {LlmName.PoeSage.value} : POE Sage 模型\n"
+            bot_info += f"* {LlmName.PoeClaude.value} : POE Claude 模型\n"
+            bot_info += f"* {LlmName.PoeChatGPT.value} : POE ChatGPT 模型\n"
+        return bot_info

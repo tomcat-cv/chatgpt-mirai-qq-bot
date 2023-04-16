@@ -2,6 +2,7 @@ import io
 from datetime import datetime
 from typing import List, Dict, Optional
 
+import httpx
 from EdgeGPT import ConversationStyle
 from PIL import Image
 from graia.amnesia.message import MessageChain
@@ -24,8 +25,10 @@ from renderer import Renderer
 from renderer.merger import BufferedContentMerger, LengthContentMerger
 from renderer.renderer import MixedContentMessageChainRenderer, MarkdownImageRenderer, PlainTextRenderer
 from renderer.splitter import MultipleSegmentSplitter
+from utils import retry
+from constants import LlmName
 
-handlers = dict()
+handlers = {}
 
 
 class ConversationContext:
@@ -61,30 +64,32 @@ class ConversationContext:
     def __init__(self, _type: str, session_id: str):
         self.session_id = session_id
 
+        self.last_resp = ''
+
         self.switch_renderer()
 
         if config.text_to_speech.always:
             self.conversation_voice = config.text_to_speech.default
 
-        if _type == 'chatgpt-web':
+        if _type == LlmName.ChatGPT_Web.value:
             self.adapter = ChatGPTWebAdapter(self.session_id)
-        elif _type == 'chatgpt-api':
+        elif _type == LlmName.ChatGPT_Api.value:
             self.adapter = ChatGPTAPIAdapter(self.session_id)
         elif PoeBot.parse(_type):
             self.adapter = PoeAdapter(self.session_id, PoeBot.parse(_type))
-        elif _type == 'bing':
+        elif _type == LlmName.Bing.value:
             self.adapter = BingAdapter(self.session_id)
-        elif _type == 'bing-c':
+        elif _type == LlmName.BingC.value:
             self.adapter = BingAdapter(self.session_id, ConversationStyle.creative)
-        elif _type == 'bing-b':
+        elif _type == LlmName.BingB.value:
             self.adapter = BingAdapter(self.session_id, ConversationStyle.balanced)
-        elif _type == 'bing-p':
+        elif _type == LlmName.BingP.value:
             self.adapter = BingAdapter(self.session_id, ConversationStyle.precise)
-        elif _type == 'bard':
+        elif _type == LlmName.Bard.value:
             self.adapter = BardAdapter(self.session_id)
-        elif _type == 'yiyan':
+        elif _type == LlmName.YiYan.value:
             self.adapter = YiyanAdapter(self.session_id)
-        elif _type == 'chatglm-api':
+        elif _type == LlmName.ChatGLM.value:
             self.adapter = ChatGLM6BAdapter(self.session_id)
         else:
             raise BotTypeNotFoundException(_type)
@@ -121,8 +126,10 @@ class ConversationContext:
 
     async def reset(self):
         await self.adapter.on_reset()
+        self.last_resp = ''
         yield config.response.reset
 
+    @retry((httpx.ConnectError, httpx.ConnectTimeout))
     async def ask(self, prompt: str, chain: MessageChain = None, name: str = None):
         # 检查是否为 画图指令
         for prefix in config.trigger.prefix_image:
@@ -142,10 +149,12 @@ class ConversationContext:
                 return
 
         if self.preset_decoration_format:
-            prompt = self.preset_decoration_format\
-                .replace("{prompt}", prompt)\
-                .replace("{nickname}", name)\
-                .replace("{date}", datetime.today().strftime('%Y-%m-%d %H:%M:%S'))
+            prompt = (
+                self.preset_decoration_format.replace("{prompt}", prompt)
+                .replace("{nickname}", name)
+                .replace("{last_resp}", self.last_resp)
+                .replace("{date}", datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+            )
 
         async with self.renderer:
             async for item in self.adapter.ask(prompt):
@@ -153,6 +162,7 @@ class ConversationContext:
                     yield item
                 else:
                     yield await self.renderer.render(item)
+                self.last_resp = item or ''
             yield await self.renderer.result()
 
     async def rollback(self):
@@ -168,15 +178,10 @@ class ConversationContext:
 
     async def load_preset(self, keyword: str):
         self.preset_decoration_format = None
-        if keyword not in config.presets.keywords:
-            if not keyword == 'default':
-                raise PresetNotFoundException(keyword)
-        else:
+        if keyword in config.presets.keywords:
             presets = config.load_preset(keyword)
             for text in presets:
-                if text.strip() and text.startswith('#'):
-                    continue
-                else:
+                if not text.strip() or not text.startswith('#'):
                     # 判断格式是否为 role: 文本
                     if ':' in text:
                         role, text = text.split(':', 1)
@@ -194,6 +199,8 @@ class ConversationContext:
 
                     async for item in self.adapter.preset_ask(role=role.lower().strip(), text=text.strip()):
                         yield item
+        elif keyword != 'default':
+            raise PresetNotFoundException(keyword)
         self.preset = keyword
 
     def delete_message(self, respond_msg):
@@ -214,7 +221,7 @@ class ConversationHandler:
     session_id: str = 'unknown'
 
     def __init__(self, session_id: str):
-        self.conversations = dict()
+        self.conversations = {}
         self.session_id = session_id
 
     def list(self) -> List[ConversationContext]:
@@ -229,20 +236,18 @@ class ConversationHandler:
     async def first_or_create(self, _type: str):
         if _type in self.conversations:
             return self.conversations[_type]
-        else:
-            conversation = ConversationContext(_type, self.session_id)
-            self.conversations[_type] = conversation
-            return conversation
+        conversation = ConversationContext(_type, self.session_id)
+        self.conversations[_type] = conversation
+        return conversation
 
     """创建新的上下文"""
 
     async def create(self, _type: str):
         if _type in self.conversations:
             return self.conversations[_type]
-        else:
-            conversation = ConversationContext(_type, self.session_id)
-            self.conversations[_type] = conversation
-            return conversation
+        conversation = ConversationContext(_type, self.session_id)
+        self.conversations[_type] = conversation
+        return conversation
 
     """切换对话上下文"""
 

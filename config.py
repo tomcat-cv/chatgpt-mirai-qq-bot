@@ -50,6 +50,15 @@ class DiscordBot(BaseModel):
     """Discord Bot 的 token"""
 
 
+class HttpService(BaseModel):
+    host: str = "0.0.0.0"
+    """0.0.0.0则不限制访问地址"""
+    port: int = 8080
+    """Http service port, 默认8080"""
+    debug: bool = False
+    """是否开启debug，错误时展示日志"""
+
+
 class OpenAIGPT3Params(BaseModel):
     temperature: float = 0.5
     max_tokens: int = 4000
@@ -162,6 +171,9 @@ class BingAuths(BaseModel):
     """在 Bing 的回复后加上猜你想问"""
     show_references: bool = True
     """在 Bing 的回复前加上引用资料"""
+    show_remaining_count: bool = True
+    """在 Bing 的回复后加上剩余次数"""
+
     wss_link: str = "wss://sydney.bing.com/sydney/ChatHub"
     """Bing 的 Websocket 接入点"""
     bing_endpoint: str = "https://edgeservices.bing.com/edgesvc/turing/conversation/create"
@@ -256,7 +268,7 @@ class Trigger(BaseModel):
     prefix_group: List[str] = []
     """群聊中的触发响应前缀，默认不需要"""
 
-    prefix_ai: Dict[str, List[str]] = dict()
+    prefix_ai: Dict[str, List[str]] = {}
     """特定类型 AI 的前缀，以此前缀开头将直接发消息至指定 AI 会话"""
 
     require_mention: Literal["at", "mention", "none"] = "at"
@@ -290,6 +302,8 @@ class Trigger(BaseModel):
     """允许普通用户切换的模型列表"""
     allow_switching_ai: bool = True
     """允许普通用户切换AI"""
+    ping_command: List[str] = ["ping"]
+    """获取服务状态"""
 
 
 class Response(BaseModel):
@@ -360,6 +374,9 @@ class Response(BaseModel):
     queued_notice: str = "消息已收到！当前我还有{queue_size}条消息要回复，请您稍等。"
     """新消息进入队列时，发送的通知。 queue_size 是当前排队的消息数"""
 
+    ping_response: str = "当前AI：{current_ai}\n当前可用AI（输入此命令切换：切换AI XXX）：\n{supported_ai}"
+    """ping返回内容"""
+
 
 class System(BaseModel):
     accept_group_invite: bool = False
@@ -380,13 +397,16 @@ class BaiduCloud(BaseModel):
     """不合规消息自定义返回"""
 
 
+
+
 class Preset(BaseModel):
     command: str = r"加载预设 (\w+)"
-    keywords: dict[str, str] = dict()
+    keywords: dict[str, str] = {}
     loaded_successful: str = "预设加载成功！"
     scan_dir: str = "./presets"
     hide: bool = False
     """是否禁止使用其他人 .预设列表 命令来查看预设"""
+
 
 
 class Ratelimit(BaseModel):
@@ -406,6 +426,7 @@ class Config(BaseModel):
     mirai: Optional[Mirai] = None
     telegram: Optional[TelegramBot] = None
     discord: Optional[DiscordBot] = None
+    http: Optional[HttpService] = None
 
     # === Account Settings ===
     openai: OpenAIAuths = OpenAIAuths()
@@ -448,11 +469,11 @@ class Config(BaseModel):
     def load_preset(self, keyword):
         try:
             with open(self.presets.keywords[keyword], "rb") as f:
-                guessed_str = from_bytes(f.read()).best()
-                if not guessed_str:
+                if guessed_str := from_bytes(f.read()).best():
+                    return str(guessed_str).replace('<|im_end|>', '').replace('\r', '').split('\n\n')
+                else:
                     raise ValueError("无法识别预设的 JSON 格式，请检查编码！")
 
-                return str(guessed_str).replace('<|im_end|>', '').replace('\r', '').split('\n\n')
         except KeyError:
             raise ValueError("预设不存在！")
         except FileNotFoundError:
@@ -468,10 +489,10 @@ class Config(BaseModel):
         try:
             import json
             with open("config.json", "rb") as f:
-                guessed_str = from_bytes(f.read()).best()
-                if not guessed_str:
+                if guessed_str := from_bytes(f.read()).best():
+                    return Config.parse_obj(json.loads(str(guessed_str)))
+                else:
                     raise ValueError("无法识别 JSON 格式！")
-                return Config.parse_obj(json.loads(str(guessed_str)))
         except Exception as e:
             logger.exception(e)
             logger.error("配置文件有误，请重新修改！")
@@ -481,8 +502,10 @@ class Config(BaseModel):
     def load_config() -> Config:
         try:
             import os
-            if not (os.path.exists('config.cfg') and os.path.getsize('config.cfg') > 0) and os.path.exists(
-                    'config.json'):
+            if (
+                not os.path.exists('config.cfg')
+                or os.path.getsize('config.cfg') <= 0
+            ) and os.path.exists('config.json'):
                 logger.info("正在转换旧版配置文件……")
                 Config.save_config(Config.__load_json_config())
                 logger.warning("提示：配置文件已经修改为 config.cfg，原来的 config.json 将被重命名为 config.json.old。")
@@ -492,10 +515,10 @@ class Config(BaseModel):
                     logger.error(e)
                     logger.error("无法重命名配置文件，请自行处理。")
             with open("config.cfg", "rb") as f:
-                guessed_str = from_bytes(f.read()).best()
-                if not guessed_str:
+                if guessed_str := from_bytes(f.read()).best():
+                    return Config.parse_obj(toml.loads(str(guessed_str)))
+                else:
                     raise ValueError("无法识别配置文件，请检查是否输入有误！")
-                return Config.parse_obj(toml.loads(str(guessed_str)))
         except Exception as e:
             logger.exception(e)
             logger.error("配置文件有误，请重新修改！")

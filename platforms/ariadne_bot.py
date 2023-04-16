@@ -2,7 +2,6 @@ import datetime
 import time
 from typing import Union
 
-import asyncio
 from charset_normalizer import from_bytes
 from graia.amnesia.builtins.aiohttp import AiohttpServerService
 from graia.ariadne.app import Ariadne
@@ -190,13 +189,6 @@ async def on_friend_request(event: BotInvitedJoinGroupRequestEvent):
 
 @app.broadcast.receiver(AccountLaunch)
 async def start_background():
-    try:
-        logger.info("ChatGPT for QQ 登录账号中……")
-        await botManager.login()
-    except:
-        logger.error("ChatGPT for QQ 登录账号失败！")
-        exit(-1)
-    logger.info("ChatGPT for QQ 登录账号成功")
     logger.info("尝试从 Mirai 服务中读取机器人 QQ 的 session key……")
     if config.mirai.reverse_ws_port:
         logger.info("[提示] 当前为反向 ws 模式，请确保你的 mirai api http 设置了正确的 reverse-ws adapter 配置")
@@ -213,7 +205,7 @@ cmd = Commander(app.broadcast)
 @cmd.command(".重新加载配置文件")
 async def update_rate(app: Ariadne, event: MessageEvent, sender: Union[Friend, Member]):
     try:
-        if not sender.id == config.mirai.manager_qq:
+        if sender.id != config.mirai.manager_qq:
             return await app.send_message(event, "您没有权限执行这个操作")
         constants.config = config.load_config()
         config.scan_presets()
@@ -230,9 +222,9 @@ async def update_rate(app: Ariadne, event: MessageEvent, sender: Union[Friend, M
 async def update_rate(app: Ariadne, event: MessageEvent, sender: Union[Friend, Member], msg_type: str, msg_id: str,
                       rate: int):
     try:
-        if not sender.id == config.mirai.manager_qq:
+        if sender.id != config.mirai.manager_qq:
             return await app.send_message(event, "您没有权限执行这个操作")
-        if msg_type != "群组" and msg_type != "好友":
+        if msg_type not in ["群组", "好友"]:
             return await app.send_message(event, "类型异常，仅支持设定【群组】或【好友】的额度")
         if msg_id != '默认' and not msg_id.isdecimal():
             return await app.send_message(event, "目标异常，仅支持设定【默认】或【指定 QQ（群）号】的额度")
@@ -247,7 +239,7 @@ async def show_rate(app: Ariadne, event: MessageEvent, msg_type: str, msg_id: st
     try:
         if isinstance(event, TempMessage):
             return
-        if msg_type != "群组" and msg_type != "好友":
+        if msg_type not in ["群组", "好友"]:
             return await app.send_message(event, "类型异常，仅支持设定【群组】或【好友】的额度")
         if msg_id != '默认' and not msg_id.isdecimal():
             return await app.send_message(event, "目标异常，仅支持设定【默认】或【指定 QQ（群）号】的额度")
@@ -265,7 +257,7 @@ async def show_rate(app: Ariadne, event: MessageEvent, msg_type: str, msg_id: st
 @cmd.command(".预设列表")
 async def presets_list(app: Ariadne, event: MessageEvent, sender: Union[Friend, Member]):
     try:
-        if config.presets.hide and not sender.id == config.mirai.manager_qq:
+        if config.presets.hide and sender.id != config.mirai.manager_qq:
             return await app.send_message(event, "您没有权限执行这个操作")
         nodes = []
         for keyword, path in config.presets.keywords.items():
@@ -273,7 +265,7 @@ async def presets_list(app: Ariadne, event: MessageEvent, sender: Union[Friend, 
                 with open(path, 'rb') as f:
                     guessed_str = from_bytes(f.read()).best()
                     preset_data = str(guessed_str).replace("\n\n", "\n=========\n")
-                answer = f"预设名：{keyword}\n" + preset_data
+                answer = f"预设名：{keyword}\n{preset_data}"
 
                 node = ForwardNode(
                     target=config.mirai.qq,
@@ -285,7 +277,7 @@ async def presets_list(app: Ariadne, event: MessageEvent, sender: Union[Friend, 
             except:
                 pass
 
-        if len(nodes) == 0:
+        if not nodes:
             await app.send_message(event, "没有查询到任何预设")
             return
         await app.send_message(event, MessageChain(Forward(nodes)))
@@ -295,5 +287,10 @@ async def presets_list(app: Ariadne, event: MessageEvent, sender: Union[Friend, 
     finally:
         raise ExecutionStop()
 
-def main():
-    app.launch_blocking()
+
+async def start_task():
+    """|coro|
+    以异步方式启动
+    """
+    app._patch_launch_manager()
+    await app.launch_manager.launch()
