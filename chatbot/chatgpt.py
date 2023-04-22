@@ -48,7 +48,7 @@ class ChatGPTBrowserChatbot(asyncio.Lock):
     async def delete_conversation(self, conversation_id):
         await self.bot.delete_conversation(conversation_id)
 
-    async def ask(self, prompt, conversation_id=None, parent_id=None, model=None):
+    async def ask(self, prompt, conversation_id=None, parent_id=None, model=''):
         """向 ChatGPT 发送提问"""
         # self.queue 已交给 MiddlewareConcurrentLock 处理，此处不处理
         self.bot.conversation_id = conversation_id

@@ -2,10 +2,11 @@ import asyncio
 import re
 from typing import Callable
 
+import httpcore
 import openai
 from graia.ariadne.message.chain import MessageChain
 from graia.ariadne.message.element import Plain
-from httpx import HTTPStatusError, ConnectTimeout
+from httpx import ConnectTimeout
 from loguru import logger
 from requests.exceptions import SSLError, ProxyError, RequestException
 from urllib3.exceptions import MaxRetryError
@@ -14,19 +15,28 @@ from constants import botManager
 from constants import config
 from conversation import ConversationHandler, ConversationContext
 from exceptions import PresetNotFoundException, BotRatelimitException, ConcurrentMessageException, \
-    BotTypeNotFoundException, NoAvailableBotException, BotOperationNotSupportedException, CommandRefusedException
+    BotTypeNotFoundException, NoAvailableBotException, BotOperationNotSupportedException, CommandRefusedException, \
+    DrawingFailedException
 from middlewares.baiducloud import MiddlewareBaiduCloud
 from middlewares.concurrentlock import MiddlewareConcurrentLock
 from middlewares.ratelimit import MiddlewareRatelimit
 from middlewares.timeout import MiddlewareTimeout
-from utils.text_to_speech import get_tts_voice
+from utils.text_to_speech import get_tts_voice, TtsVoiceManager
 
 middlewares = [MiddlewareTimeout(), MiddlewareRatelimit(), MiddlewareBaiduCloud(), MiddlewareConcurrentLock()]
 
 
-def get_ping_response(conversation_context: ConversationContext):
-    return config.response.ping_response.format(current_ai=conversation_context.type,
-                                                supported_ai=botManager.bots_info())
+async def get_ping_response(conversation_context: ConversationContext):
+    current_voice = conversation_context.conversation_voice.alias if conversation_context.conversation_voice else "无"
+    response = config.response.ping_response.format(current_ai=conversation_context.type,
+                                                    current_voice=current_voice,
+                                                    supported_ai=botManager.bots_info())
+    tts_voices = await TtsVoiceManager.list_tts_voices(
+        config.text_to_speech.engine, config.text_to_speech.default_voice_prefix)
+    if tts_voices:
+        supported_tts = ",".join([v.alias for v in tts_voices])
+        response += config.response.ping_tts_response.format(supported_tts=supported_tts)
+    return response
 
 
 async def handle_message(_respond: Callable, session_id: str, message: str,
@@ -132,32 +142,45 @@ async def handle_message(_respond: Callable, session_id: str, message: str,
                 task = conversation_context.rollback()
 
             elif prompt in config.trigger.ping_command:
-                await respond(get_ping_response(conversation_context))
+                await respond(await get_ping_response(conversation_context))
                 return
 
             elif voice_type_search := re.search(config.trigger.switch_voice, prompt):
                 if not config.azure.tts_speech_key and config.text_to_speech.engine == "azure":
                     await respond("未配置 Azure TTS 账户，无法切换语音！")
-                conversation_context.conversation_voice = voice_type_search[1].strip()
-                if conversation_context.conversation_voice == '关闭':
+                new_voice = voice_type_search[1].strip()
+                if new_voice in ['关闭', "None"]:
                     conversation_context.conversation_voice = None
                     await respond("已关闭语音，让我们继续聊天吧！")
                 elif config.text_to_speech.engine == "vits":
                     from utils.vits_tts import vits_api_instance
-
                     try:
-                        if conversation_context.conversation_voice != "None":
-                            voice_id = conversation_context.conversation_voice
-                            voice_name = await vits_api_instance.set_id(voice_id)
-                        else:
-                            voice_name = await vits_api_instance.set_id(None)
+                        voice_name = await vits_api_instance.set_id(new_voice)
+                        conversation_context.conversation_voice = TtsVoiceManager.parse_tts_voice("vits", voice_name)
                         await respond(f"已切换至 {voice_name} 语音，让我们继续聊天吧！")
                     except ValueError:
                         await respond("提供的语音ID无效，请输入一个有效的数字ID。")
                     except Exception as e:
                         await respond(str(e))
+                elif config.text_to_speech.engine == "edge":
+                    tts_voice = TtsVoiceManager.parse_tts_voice("edge", new_voice)
+                    if tts_voice:
+                        conversation_context.conversation_voice = tts_voice
+                        await respond(f"已切换至 {tts_voice.alias} 语音，让我们继续聊天吧！")
+                    else:
+                        available_voice = ",".join([v.alias for v in await TtsVoiceManager.list_tts_voices(
+                            "edge", config.text_to_speech.default_voice_prefix)])
+                        await respond(f"提供的语音ID无效，请输入一个有效的语音ID。如：{available_voice}。")
+                        conversation_context.conversation_voice = None
+                elif config.text_to_speech.engine == "azure":
+                    tts_voice = TtsVoiceManager.parse_tts_voice("azure", new_voice)
+                    conversation_context.conversation_voice = tts_voice
+                    if tts_voice:
+                        await respond(f"已切换至 {tts_voice.full_name} 语音，让我们继续聊天吧！")
+                    else:
+                        await respond("提供的语音ID无效，请输入一个有效的语音ID。")
                 else:
-                    await respond(f"已切换至 {conversation_context.conversation_voice} 语音，让我们继续聊天吧！")
+                    await respond("未配置文字转语音引擎，无法使用语音功能。")
                 return
 
             elif prompt in config.trigger.mixed_only_command:
@@ -215,15 +238,18 @@ async def handle_message(_respond: Callable, session_id: str, message: str,
                     await action(session_id, prompt, rendered, respond)
             for m in middlewares:
                 await m.handle_respond_completed(session_id, prompt, respond)
+        except DrawingFailedException as e:
+            logger.exception(e)
+            await respond(config.response.error_drawing.format(exc=e.__cause__  or '未知'))
         except CommandRefusedException as e:
             await respond(str(e))
         except openai.error.InvalidRequestError as e:
-            await respond(f"服务器拒绝了您的请求，原因是{str(e)}")
+            await respond(f"服务器拒绝了您的请求，原因是： {str(e)}")
         except BotOperationNotSupportedException:
             await respond("暂不支持此操作，抱歉！")
         except ConcurrentMessageException as e:  # Chatbot 账号同时收到多条消息
             await respond(config.response.error_request_concurrent_error)
-        except (BotRatelimitException, HTTPStatusError) as e:  # Chatbot 账号限流
+        except BotRatelimitException as e:  # Chatbot 账号限流
             await respond(config.response.error_request_too_many.format(exc=e))
         except NoAvailableBotException as e:  # 预设不存在
             await respond(f"当前没有可用的{e}账号，不支持使用此 AI！")
@@ -233,7 +259,7 @@ async def handle_message(_respond: Callable, session_id: str, message: str,
             await respond(respond_msg)
         except PresetNotFoundException:  # 预设不存在
             await respond("预设不存在，请检查你的输入是否有问题！")
-        except (RequestException, SSLError, ProxyError, MaxRetryError, ConnectTimeout, ConnectTimeout) as e:  # 网络异常
+        except (RequestException, SSLError, ProxyError, MaxRetryError, ConnectTimeout, ConnectTimeout, httpcore.ReadTimeout) as e:  # 网络异常
             await respond(config.response.error_network_failure.format(exc=e))
         except Exception as e:  # 未处理的异常
             logger.exception(e)

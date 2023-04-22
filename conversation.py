@@ -1,34 +1,39 @@
-import io
+import asyncio
+import contextlib
 from datetime import datetime
 from typing import List, Dict, Optional
 
 import httpx
 from EdgeGPT import ConversationStyle
-from PIL import Image
 from graia.amnesia.message import MessageChain
 from graia.ariadne.message.element import Image as GraiaImage, Element
 from loguru import logger
 
+import constants
 from adapter.baidu.yiyan import YiyanAdapter
 from adapter.botservice import BotAdapter
 from adapter.chatgpt.api import ChatGPTAPIAdapter
 from adapter.chatgpt.web import ChatGPTWebAdapter
 from adapter.google.bard import BardAdapter
 from adapter.ms.bing import BingAdapter
-from adapter.openai.api import OpenAIAPIAdapter
+from drawing import DrawingAPI, SDWebUI as SDDrawing, OpenAI as OpenAIDrawing
 from adapter.quora.poe import PoeBot, PoeAdapter
 from adapter.thudm.chatglm_6b import ChatGLM6BAdapter
 from constants import config
 from exceptions import PresetNotFoundException, BotTypeNotFoundException, NoAvailableBotException, \
-    CommandRefusedException
+    CommandRefusedException, DrawingFailedException
 from renderer import Renderer
 from renderer.merger import BufferedContentMerger, LengthContentMerger
 from renderer.renderer import MixedContentMessageChainRenderer, MarkdownImageRenderer, PlainTextRenderer
 from renderer.splitter import MultipleSegmentSplitter
+from middlewares.draw_ratelimit import MiddlewareRatelimit
 from utils import retry
 from constants import LlmName
+from utils.text_to_speech import TtsVoice, TtsVoiceManager
 
 handlers = {}
+
+middlewares = MiddlewareRatelimit()
 
 
 class ConversationContext:
@@ -43,14 +48,15 @@ class ConversationContext:
     renderer: Renderer
     """消息渲染器"""
 
-    openai_api: OpenAIAPIAdapter = None
-    """OpenAI API适配器，提供聊天之外的功能"""
+    drawing_adapter: DrawingAPI = None
+    """绘图引擎"""
+
     preset: str = None
 
     preset_decoration_format: Optional[str] = "{prompt}"
     """预设装饰文本"""
 
-    conversation_voice: Optional[str] = None
+    conversation_voice: TtsVoice = None
     """语音音色"""
 
     @property
@@ -69,8 +75,12 @@ class ConversationContext:
         self.switch_renderer()
 
         if config.text_to_speech.always:
-            self.conversation_voice = config.text_to_speech.default
-
+            tts_engine = config.text_to_speech.engine
+            tts_voice = config.text_to_speech.default
+            try:
+                self.conversation_voice = TtsVoiceManager.parse_tts_voice(tts_engine, tts_voice)
+            except KeyError as e:
+                logger.error(f"Failed to load {tts_engine} tts voice setting -> {tts_voice}")
         if _type == LlmName.ChatGPT_Web.value:
             self.adapter = ChatGPTWebAdapter(self.session_id)
         elif _type == LlmName.ChatGPT_Api.value:
@@ -96,10 +106,14 @@ class ConversationContext:
         self.type = _type
 
         # 没有就算了
-        try:
-            self.openai_api = OpenAIAPIAdapter(session_id)
-        except NoAvailableBotException:
-            pass
+        if config.sdwebui:
+            self.drawing_adapter = SDDrawing()
+        elif config.bing.use_drawing:
+            with contextlib.suppress(NoAvailableBotException):
+                self.drawing_adapter = BingAdapter(self.session_id, ConversationStyle.creative)
+        else:
+            with contextlib.suppress(NoAvailableBotException):
+                self.drawing_adapter = OpenAIDrawing(self.session_id)
 
     def switch_renderer(self, mode: Optional[str] = None):
         # 目前只有这一款
@@ -129,23 +143,31 @@ class ConversationContext:
         self.last_resp = ''
         yield config.response.reset
 
-    @retry((httpx.ConnectError, httpx.ConnectTimeout))
+    @retry((httpx.ConnectError, httpx.ConnectTimeout, TimeoutError))
     async def ask(self, prompt: str, chain: MessageChain = None, name: str = None):
         # 检查是否为 画图指令
         for prefix in config.trigger.prefix_image:
             if prompt.startswith(prefix) and not isinstance(self.adapter, YiyanAdapter):
-                if not self.openai_api:
-                    yield "没有 OpenAI API-key，无法使用画图功能！"
+                respond_str = middlewares.handle_draw_request(self.session_id, prompt)
+                if respond_str != "1":
+                    yield respond_str
+                    return
+                if not self.drawing_adapter:
+                    yield "未配置画图引擎，无法使用画图功能！"
+                    return
                 prompt = prompt.removeprefix(prefix)
-                if chain.has(GraiaImage):
-                    image = chain.get_first(GraiaImage)
-                    raw_bytes = io.BytesIO(await image.get_bytes())
-                    raw_image = Image.open(raw_bytes)
-                    image_data = await self.openai_api.image_variation(src_img=raw_image)
-                else:
-                    image_data = await self.openai_api.image_creation(prompt)
-                logger.debug("[OpenAI Image] Downloaded")
-                yield GraiaImage(data_bytes=image_data)
+                try:
+                    if chain.has(GraiaImage):
+                        images = await self.drawing_adapter.img_to_img(chain.get(GraiaImage), prompt)
+                    else:
+                        images = await self.drawing_adapter.text_to_img(prompt)
+                    for i in images:
+                        yield i
+                except Exception as e:
+                    raise DrawingFailedException from e
+                respond_str = middlewares.handle_draw_respond_completed(self.session_id, prompt)
+                if respond_str != "1":
+                    yield respond_str
                 return
 
         if self.preset_decoration_format:
@@ -193,8 +215,9 @@ class ConversationContext:
                         continue
 
                     if role == 'voice':
-                        self.conversation_voice = text.strip()
-                        logger.debug(f"Set conversation voice to {self.conversation_voice}")
+                        self.conversation_voice = TtsVoiceManager.parse_tts_voice(config.text_to_speech.engine,
+                                                                                  text.strip())
+                        logger.debug(f"Set conversation voice to {self.conversation_voice.full_name}")
                         continue
 
                     async for item in self.adapter.preset_ask(role=role.lower().strip(), text=text.strip()):

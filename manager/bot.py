@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 import OpenAIAuth
 import openai
+import regex
 import requests
 import urllib3.exceptions
 from aiohttp import ClientConnectorError
@@ -71,7 +72,7 @@ class BotManager:
             os.mkdir('data')
             logger.warning(
                 "警告：未检测到 data 目录，如果你通过 Docker 部署，请挂载此目录以实现登录缓存，否则可忽略此消息。")
-        except:
+        except Exception:
             pass
         self.cache_db = TinyDB('data/login_caches.json')
 
@@ -93,20 +94,36 @@ class BotManager:
         if len(self.bard) > 0:
             self.login_bard()
         if len(self.openai) > 0:
+
+            # 考虑到有人会写错全局配置
+            for account in self.config.openai.accounts:
+                account = account.dict()
+                if 'browserless_endpoint' in account:
+                    logger.warning("警告： browserless_endpoint 配置位置有误，正在将其调整为全局配置")
+                    self.config.openai.browserless_endpoint = account['browserless_endpoint']
+                if 'api_endpoint' in account:
+                    logger.warning("警告： api_endpoint 配置位置有误，正在将其调整为全局配置")
+                    self.config.openai.api_endpoint = account['api_endpoint']
+
+            # 应用 browserless_endpoint 配置
             if self.config.openai.browserless_endpoint:
                 V1.BASE_URL = self.config.openai.browserless_endpoint or V1.BASE_URL
             logger.info(f"当前的 browserless_endpoint 为：{V1.BASE_URL}")
 
+            # 历史遗留问题 1
             if V1.BASE_URL == 'https://bypass.duti.tech/api/':
                 logger.error("检测到你还在使用旧的 browserless_endpoint，已为您切换。")
                 V1.BASE_URL = "https://bypass.churchless.tech/api/"
-
+            # 历史遗留问题 2
             if not V1.BASE_URL.endswith("api/"):
                 logger.warning(
                     f"提示：你可能要将 browserless_endpoint 修改为 \"{self.config.openai.browserless_endpoint}api/\"")
 
+            # 应用 api_endpoint 配置
             if self.config.openai.api_endpoint:
                 openai.api_base = self.config.openai.api_endpoint or openai.api_base
+                if openai.api_base.endswith("/"):
+                    openai.api_base.removesuffix("/")
             logger.info(f"当前的 api_endpoint 为：{openai.api_base}")
 
             await self.login_openai()
@@ -222,6 +239,16 @@ class BotManager:
             if proxy := self.__check_proxy(account.proxy):
                 account.proxy = proxy
             try:
+                if account.cookie_content:
+                    logger.error("cookie_content 字段已弃用，请填写 BDUSS 和 BAIDUID！")
+                    account.BDUSS = (regex.findall(r"BDUSS=(.*?);", account.cookie_content) or [None])[0]
+                    account.BAIDUID = (regex.findall(r"BAIDUID=(.*?);", account.cookie_content) or [None])[0]
+                if not account.BAIDUID:
+                    logger.error("未填写 BAIDUID，可能会有较高封号风险！")
+                if not account.BDUSS:
+                    logger.error("未填写 BDUSS，无法使用！")
+                assert account.BDUSS
+
                 self.bots["yiyan-cookie"].append(account)
                 logger.success("解析成功！", i=i + 1)
             except Exception as e:
@@ -244,7 +271,7 @@ class BotManager:
             logger.error("所有 ChatGLM 账号均解析失败！")
         logger.success(f"成功解析 {len(self.bots['chatglm-api'])}/{len(self.chatglm)} 个 ChatGLM 账号！")
 
-    async def login_openai(self):
+    async def login_openai(self):  # sourcery skip: raise-specific-error
         counter = 0
         for i, account in enumerate(self.openai):
             logger.info("正在登录第 {i} 个 OpenAI 账号", i=i + 1)
@@ -308,7 +335,7 @@ class BotManager:
         if system_proxy is not None:
             openai.proxy = system_proxy
 
-    def __check_proxy(self, proxy):
+    def __check_proxy(self, proxy):  # sourcery skip: raise-specific-error
         if proxy is None:
             return openai.proxy
         logger.info(f"[代理测试] 正在检查代理配置：{proxy}")
@@ -336,6 +363,7 @@ class BotManager:
         return cache['cache'] if cache is not None else {}
 
     async def __login_V1(self, account: OpenAIAuthBase) -> ChatGPTBrowserChatbot:
+        # sourcery skip: raise-specific-error
         logger.info("模式：无浏览器登录")
         cached_account = dict(self.__load_login_cache(account), **account.dict())
         config = {}
@@ -407,12 +435,12 @@ class BotManager:
         logger.warning("在查询 API 额度时遇到问题，请自行确认额度。")
         return account
 
-    def pick(self, type: str):
-        if type not in self.roundrobin:
-            self.roundrobin[type] = itertools.cycle(self.bots[type])
-        if len(self.bots[type]) == 0:
-            raise NoAvailableBotException(type)
-        return next(self.roundrobin[type])
+    def pick(self, llm: str):
+        if llm not in self.roundrobin:
+            self.roundrobin[llm] = itertools.cycle(self.bots[llm])
+        if len(self.bots[llm]) == 0:
+            raise NoAvailableBotException(llm)
+        return next(self.roundrobin[llm])
 
     def bots_info(self):
         from constants import LlmName
