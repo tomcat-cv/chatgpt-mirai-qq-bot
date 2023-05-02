@@ -10,6 +10,7 @@ botManager = BotManager(config)
 
 
 class LlmName(Enum):
+    SlackClaude = "slack-claude"
     PoeSage = "poe-sage"
     PoeGPT4 = "poe-gpt4"
     PoeClaude2 = "poe-claude2"
@@ -25,3 +26,12 @@ class LlmName(Enum):
     Bard = "bard"
     YiYan = "yiyan"
     ChatGLM = "chatglm-api"
+
+
+class BotPlatform(Enum):
+    AriadneBot = "mirai"
+    DiscordBot = "discord"
+    Onebot = "onebot"
+    TelegramBot = "telegram"
+    HttpService = "http"
+    WecomBot = "wecom"
